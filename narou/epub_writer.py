@@ -158,7 +158,7 @@ def write_epub(
         image_data: {ファイル名: バイトデータ} の辞書
     """
     output_path = Path(output_path)
-    book_id = f"narou-{uuid.uuid4()}"
+    book_id = str(uuid.uuid4())
     modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # 全セクションの画像を収集
@@ -177,6 +177,7 @@ def write_epub(
         images=all_images,
     )
     toc_xhtml = _build_toc_xhtml(title, sections)
+    toc_ncx = _build_toc_ncx(book_id, title, sections)
     titlepage_xhtml = _build_titlepage_xhtml(title, author, sitename)
     cover_xhtml = _build_cover_xhtml(title, author)
 
@@ -186,6 +187,7 @@ def write_epub(
         zf.writestr("META-INF/container.xml", CONTAINER_XML)
         zf.writestr("OEBPS/content.opf", content_opf)
         zf.writestr("OEBPS/toc.xhtml", toc_xhtml)
+        zf.writestr("OEBPS/toc.ncx", toc_ncx)
         zf.writestr("OEBPS/Styles/style.css", STYLE_CSS)
         zf.writestr("OEBPS/Text/cover.xhtml", cover_xhtml)
         zf.writestr("OEBPS/Text/titlepage.xhtml", titlepage_xhtml)
@@ -215,6 +217,7 @@ def _build_content_opf(
 
     # manifest items
     manifest_items = [
+        '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
         '    <item id="nav" href="toc.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
         '    <item id="css" href="Styles/style.css" media-type="text/css"/>',
         '    <item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml" properties="svg"/>',
@@ -264,7 +267,7 @@ def _build_content_opf(
   <manifest>
 {manifest_str}
   </manifest>
-  <spine page-progression-direction="rtl">
+  <spine toc="ncx" page-progression-direction="rtl">
 {spine_str}
   </spine>
 </package>"""
@@ -339,7 +342,7 @@ def _build_toc_xhtml(title: str, sections: list[EpubSection]) -> str:
             if current_chapter is not None:
                 toc_items += "      </ol>\n      </li>\n"
             current_chapter = sec.chapter
-            toc_items += f'      <li>{_xml_escape(current_chapter)}\n      <ol>\n'
+            toc_items += f'      <li><span>{_xml_escape(current_chapter)}</span>\n      <ol>\n'
 
         indent = "        " if current_chapter else "      "
         toc_items += f'{indent}<li><a href="Text/{sec.filename}">{_xml_escape(sec.title)}</a></li>\n'
@@ -365,6 +368,35 @@ def _build_toc_xhtml(title: str, sections: list[EpubSection]) -> str:
   </nav>
 </body>
 </html>"""
+
+
+def _build_toc_ncx(book_id: str, title: str, sections: list[EpubSection]) -> str:
+    """EPUB2互換のNCX目次を生成する。"""
+    nav_points = ""
+    play_order = 1
+
+    for sec in sections:
+        nav_points += f"""\
+    <navPoint id="navPoint-{play_order}" playOrder="{play_order}">
+      <navLabel><text>{_xml_escape(sec.title)}</text></navLabel>
+      <content src="Text/{sec.filename}"/>
+    </navPoint>
+"""
+        play_order += 1
+
+    return f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="urn:uuid:{book_id}"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>{_xml_escape(title)}</text></docTitle>
+  <navMap>
+{nav_points}  </navMap>
+</ncx>"""
 
 
 def _build_section_xhtml(sec: EpubSection) -> str:
