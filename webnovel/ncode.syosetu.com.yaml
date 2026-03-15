@@ -1,0 +1,62 @@
+# ------------------------------------------------------------
+# 小説サイト定義
+name: 小説家になろう
+scheme: https
+domain: ncode.syosetu.com
+top_url: \\k<scheme>://\\k<domain>
+url: https?://\\k<domain>/(?<ncode>n\d+[a-zA-Z]+)
+encoding: UTF-8
+confirm_over18: no
+append_title_to_folder_name: yes
+title_strip_pattern: null
+
+# ------------------------------------------------------------
+# 目次取得設定
+toc_url: \\k<top_url>/\\k<ncode>/
+subtitles: |-
+  (?:<div class="p-eplist__chapter-title">(?<chapter>.+?)</div>\s*)?<div class="p-eplist__sublist">\s*<a href="(?<href>/[^"]+?/(?<index>\d+?)/)" class="p-eplist__subtitle">\s*(?<subtitle>.+?)\s*</a>\s*<div class="p-eplist__update">\s*(?<subdate>[0-9/: ]+?)(?:\s*<span title="(?<subupdate>.+?) 改稿">（<u>改</u>）</span>)?\s*</div>\s*</div>
+
+# ページネーション対応
+toc_next_url: <a href="(?<toc_next_url>/\\k<ncode>/\?p=\d+)" class="c-pager__item c-pager__item--next">
+
+# ------------------------------------------------------------
+# 特殊な設定
+is_narou: true
+narou_api_url: https://api.syosetu.com/novelapi/api/
+
+# ------------------------------------------------------------
+# 小説情報からパースするための設定
+novel_info_url: \\k<top_url>/novelview/infotop/ncode/\\k<ncode>/
+
+# タイトル
+t: <h1 class="p-infotop-title">\s*<a href=".+?">(?<title>.+?)</a>\s*</h1>
+
+# novel_type 小説種別
+nt: <td class="p-infotop-data__value">(?<novel_type>連載中|完結済|短編)</td>
+novel_type_string:
+  連載中: 1
+  完結済: 3
+  短編: 2
+
+# general_all_no 掲載話数（新UIでは全N部の表記がなくなった可能性あり）
+ga: 全(?<general_all_no>\d+)部
+
+# story あらすじ
+s: |-
+  <dt class="p-infotop-data__title">あらすじ</dt>\s*<dd class="p-infotop-data__value">(?<story>.+?)</dd>
+
+# general_firstup 初回掲載日
+gf: |-
+  <dt class="p-infotop-data__title">掲載日</dt>\s*<dd class="p-infotop-data__value">(?<general_firstup>.+?)</dd>
+
+# novelupdated_at 小説の更新時刻。最終掲載日で代用
+nu: |-
+  <dt class="p-infotop-data__title">最終掲載日</dt>\s*<dd class="p-infotop-data__value">(?<novelupdated_at>.+?)</dd>
+
+# general_lastup 最終掲載日
+gl: |-
+  <dt class="p-infotop-data__title">最終掲載日</dt>\s*<dd class="p-infotop-data__value">(?<general_lastup>.+?)</dd>
+
+# writer 作者名
+w: |-
+  <dt class="p-infotop-data__title">作者名</dt>\s*<dd class="p-infotop-data__value">(?:<a href=".+?">)?(?<writer>.+?)(?:</a>)?\s*</dd>
