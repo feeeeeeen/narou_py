@@ -108,7 +108,8 @@ class DownloadWorker(QThread):
         converter = TextConverter(setting)
 
         # セクションYAMLファイルを番号順に読み込む
-        yaml_files = sorted(section_dir.glob("*.yaml"))
+        yaml_files = sorted(section_dir.glob("*.yaml"),
+                            key=lambda p: int(p.name.split(" ", 1)[0]))
         sections: list[EpubSection] = []
 
         for idx, yaml_path in enumerate(yaml_files, 1):
