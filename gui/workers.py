@@ -78,20 +78,18 @@ class DownloadWorker(QThread):
                     self.finished_one.emit(novel.id, False, "ダウンロード失敗")
                     continue
 
-                if result.status == "none":
-                    self.finished_one.emit(novel.id, True, "更新なし")
-                    success += 1
-                    continue
-
-                # ダウンロード成功 - EPUB変換
+                # EPUB変換（更新なしの場合も設定変更に対応するため常に実行）
                 self.progress.emit(pct, f"変換中: {novel.title}")
-                archive_path = Path(result.novel.archive_path) if result.novel and result.novel.archive_path else None
+                # DB再取得（ダウンロードでarchive_pathが更新されている場合がある）
+                updated_novel = db.get_novel(novel.id) or novel
+                archive_path = Path(updated_novel.archive_path) if updated_novel.archive_path else None
 
-                if archive_path:
-                    epub_path = self._convert_to_epub(result.novel, archive_path)
-                    self.finished_one.emit(novel.id, True, f"完了: {epub_path.name}")
+                if archive_path and (archive_path / SECTION_SAVE_DIR).exists():
+                    epub_path = self._convert_to_epub(updated_novel, archive_path)
+                    status_msg = "完了" if result.status == "ok" else "変換完了（更新なし）"
+                    self.finished_one.emit(novel.id, True, f"{status_msg}: {epub_path.name}")
                 else:
-                    self.finished_one.emit(novel.id, True, f"ダウンロード完了: {novel.title}")
+                    self.finished_one.emit(novel.id, True, f"更新なし: {novel.title}")
 
                 success += 1
 

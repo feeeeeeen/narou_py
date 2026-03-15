@@ -58,6 +58,22 @@ _ZENKAKU_KANA = "ヲァィゥェォャュョッーアイウエオカキクケコ
 # 英文判定
 ENGLISH_MIN_LEN = 8
 
+# Stashキー用: 16進数字(0-9,a-f)をUnicode私用領域にマッピングし、
+# 数字変換・アルファベット変換パイプラインの影響を完全に回避する
+_PUA_STASH_BASE = 0xE010  # U+E010〜U+E01F (16文字分)
+_PUA_STASH_RANGE = "".join(chr(_PUA_STASH_BASE + i) for i in range(16))
+_PUA_STASH_RE = f"[{_PUA_STASH_RANGE}]+"
+
+
+def _encode_stash_key(n: int) -> str:
+    """整数をPUA文字列にエンコード"""
+    return "".join(chr(_PUA_STASH_BASE + int(c, 16)) for c in hex(n)[2:])
+
+
+def _decode_stash_key(pua: str) -> int:
+    """PUA文字列を整数にデコード"""
+    return int("".join(hex(ord(c) - _PUA_STASH_BASE)[2:] for c in pua), 16)
+
 
 class TextConverter:
     """テキスト変換エンジン"""
@@ -65,7 +81,7 @@ class TextConverter:
     def __init__(self, setting: NovelSetting):
         self.setting = setting
         # Stash用リスト
-        self._kanji_num_list: dict[str, str] = {}
+        self._kanji_num_list: dict[int, str] = {}
         self._num_comma_list: dict[int, str] = {}
         self._num_comma_counter = 0
         self._english_sentences: list[str] = []
@@ -402,9 +418,7 @@ class TextConverter:
         def _stash_comma(m: re.Match) -> str:
             self._num_comma_counter += 1
             self._num_comma_list[self._num_comma_counter] = m.group(0)
-            # Unicode私用領域をマーカーに使用（入力テキストとの衝突を防止）
-            key = hex(self._num_comma_counter)[2:]
-            return f"［＃半角数字＝\uE000{key}\uE001］"
+            return f"［＃半角数字＝{_encode_stash_key(self._num_comma_counter)}］"
         data = re.sub(r"\d[\d,]+\d", _stash_comma, data)
         # 半角→全角→漢数字
         data = self._hankaku_to_zenkaku_num(data)
@@ -415,25 +429,26 @@ class TextConverter:
         """既存の漢数字を退避"""
         counter = [0]
         def _stash(m: re.Match) -> str:
-            key = str(counter[0])
+            key = counter[0]
             self._kanji_num_list[key] = m.group(0)
             counter[0] += 1
-            return f"［＃漢数字＝{key}］"
+            return f"［＃漢数字＝{_encode_stash_key(key)}］"
         return re.sub(rf"[{KANJI_NUM}十百千万億兆京]+", _stash, data)
 
     def _rebuild_kanji_num(self, data: str) -> str:
         """退避した漢数字を復元"""
         def _rebuild(m: re.Match) -> str:
-            return self._kanji_num_list.get(m.group(1), m.group(0))
-        data = re.sub(r"［＃漢数字＝(.+?)］", _rebuild, data)
+            key = _decode_stash_key(m.group(1))
+            return self._kanji_num_list.get(key, m.group(0))
+        data = re.sub(rf"［＃漢数字＝({_PUA_STASH_RE})］", _rebuild, data)
         self._kanji_num_list.clear()
         return data
 
     def _rebuild_hankaku_num_and_comma(self, data: str) -> str:
         def _rebuild(m: re.Match) -> str:
-            key = int(m.group(1), 16)
+            key = _decode_stash_key(m.group(1))
             return self._num_comma_list.get(key, m.group(0))
-        data = re.sub(r"［＃半角数字＝\uE000([0-9a-f]+)\uE001］", _rebuild, data)
+        data = re.sub(rf"［＃半角数字＝({_PUA_STASH_RE})］", _rebuild, data)
         self._num_comma_list.clear()
         return data
 

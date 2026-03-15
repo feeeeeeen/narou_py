@@ -1,12 +1,19 @@
+import gzip
+import http.client
 import logging
 import re
+import ssl
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 import requests
 import yaml
+
+# yaml.CSafeDumper が利用可能なら使う（17倍高速）
+_yaml_dumper = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +30,11 @@ RAW_DATA_DIR = "raw"
 TOC_FILE_NAME = "toc.yaml"
 WAITING_TIME_FOR_503 = 20
 RETRY_MAX_FOR_503 = 5
-# 適応型インターバル
-BASE_INTERVAL = 0.3       # エラーなし時の基本間隔（秒）
-MAX_INTERVAL = 20.0       # 最大間隔（秒）
-BACKOFF_MULTIPLIER = 3    # 503発生時の倍率
-RECOVER_THRESHOLD = 10    # この回数連続成功で間隔を半減
+# ウェイト管理（narou_rb準拠）
+STEPS_WAIT_TIME = 5       # N話ごとのウェイト秒数
+DEFAULT_INTERVAL = 0      # 各話間の基本間隔（秒）。0=ウェイトなし
+DEFAULT_WAIT_STEPS = 0    # N話ごとにウェイトを入れる（0=サイト依存）
+NAROU_WAIT_STEPS = 10     # なろう系サイトのデフォルト（10話ごと）
 NOVEL_TYPE_SERIES = 1
 NOVEL_TYPE_SS = 2
 
@@ -57,9 +64,14 @@ class NovelDownloader:
         self.session.headers["User-Agent"] = USER_AGENT
         self.site_settings = self._load_site_settings()
         self._novel_info_client = NovelInfo(self.session)
-        # 適応型ウェイト管理
-        self._current_interval = BASE_INTERVAL
-        self._success_streak = 0
+        # ウェイト管理（narou_rb準拠: N話ごとにバッチウェイト）
+        self._interval_sleep_time = DEFAULT_INTERVAL
+        self._max_steps_wait_time = max(STEPS_WAIT_TIME, self._interval_sleep_time)
+        self._wait_counter = 0
+        self._last_download_time = time.time() - 20  # 初回はカウンタリセット
+        # http.client 持続接続キャッシュ（ホスト→接続）
+        self._ssl_ctx = ssl.create_default_context()
+        self._connections: dict[str, http.client.HTTPSConnection | http.client.HTTPConnection] = {}
 
     def _load_site_settings(self) -> list[SiteSetting]:
         """webnovel/*.yaml からサイト定義をすべて読み込む"""
@@ -183,12 +195,19 @@ class NovelDownloader:
         downloaded_count = 0
         total = len(update_subtitles)
 
+        # ウェイトステップ数を決定（narou_rb準拠）
+        download_wait_steps = DEFAULT_WAIT_STEPS
+        if setting.get_raw("is_narou"):
+            if download_wait_steps > NAROU_WAIT_STEPS or download_wait_steps == 0:
+                download_wait_steps = NAROU_WAIT_STEPS
+
         if total > 0:
             for i, sub_info in enumerate(update_subtitles):
                 if progress_callback:
                     progress_callback(i + 1, total, sub_info.get("subtitle", ""))
 
-                element = self._download_section(sub_info, setting, archive_path)
+                element = self._download_section(sub_info, setting, archive_path,
+                                                 download_wait_steps)
                 self._save_section(archive_path, sub_info, element)
                 downloaded_count += 1
 
@@ -351,9 +370,10 @@ class NovelDownloader:
     # ========== 各話ダウンロード ==========
 
     def _download_section(self, subtitle_info: dict, setting: SiteSetting,
-                          archive_path: Path) -> dict:
+                          archive_path: Path,
+                          download_wait_steps: int = 0) -> dict:
         """1話分のHTMLを取得し、本文・前書き・後書きに分割する"""
-        self._sleep_for_download()
+        self._sleep_for_download(download_wait_steps)
 
         href = subtitle_info["href"]
         if href.startswith("/"):
@@ -471,53 +491,100 @@ class NovelDownloader:
 
     # ========== HTTP ==========
 
-    def _http_get(self, url: str, headers: dict | None = None) -> str:
-        """503リトライ付きHTTP GET（適応型バックオフ連携）"""
-        retry_count = RETRY_MAX_FOR_503
-        while True:
-            try:
-                resp = self.session.get(url, headers=headers or {}, timeout=30)
-                if resp.status_code == 503 and retry_count > 0:
-                    retry_count -= 1
-                    self._on_download_throttled()
-                    time.sleep(WAITING_TIME_FOR_503)
-                    continue
-                resp.raise_for_status()
-                self._on_download_success()
-                return pretreatment_source(resp.text)
-            except requests.exceptions.HTTPError:
-                if resp.status_code == 503 and retry_count > 0:
-                    retry_count -= 1
-                    self._on_download_throttled()
-                    time.sleep(WAITING_TIME_FOR_503)
-                    continue
-                raise
+    def _get_connection(self, parsed) -> http.client.HTTPSConnection | http.client.HTTPConnection:
+        """ホストごとの持続接続を取得（なければ作成）"""
+        host = parsed.hostname
+        port = parsed.port
+        key = f"{parsed.scheme}://{host}:{port or ''}"
 
-    def _sleep_for_download(self) -> None:
-        """適応型ダウンロードウェイト
+        conn = self._connections.get(key)
+        if conn is not None:
+            return conn
 
-        基本間隔（0.3秒）で取得し、503エラー時は間隔を拡大、
-        連続成功時は間隔を縮小する。
-        """
-        if self._current_interval > 0:
-            time.sleep(self._current_interval)
-
-    def _on_download_success(self) -> None:
-        """ダウンロード成功時: 連続成功でインターバルを縮小"""
-        self._success_streak += 1
-        if (self._success_streak >= RECOVER_THRESHOLD
-                and self._current_interval > BASE_INTERVAL):
-            self._current_interval = max(
-                BASE_INTERVAL, self._current_interval / 2
+        if parsed.scheme == "https":
+            conn = http.client.HTTPSConnection(
+                host, port=port or 443, context=self._ssl_ctx, timeout=30
             )
-            self._success_streak = 0
+        else:
+            conn = http.client.HTTPConnection(host, port=port or 80, timeout=30)
+        self._connections[key] = conn
+        return conn
 
-    def _on_download_throttled(self) -> None:
-        """503発生時: インターバルを拡大"""
-        self._success_streak = 0
-        self._current_interval = min(
-            MAX_INTERVAL, self._current_interval * BACKOFF_MULTIPLIER
-        )
+    def _http_get(self, url: str, headers: dict | None = None) -> str:
+        """http.client 持続接続による高速HTTP GET（503リトライ・適応型バックオフ連携）"""
+        retry_count = RETRY_MAX_FOR_503
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+
+        req_headers = {
+            "User-Agent": USER_AGENT,
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
+        }
+        if headers:
+            req_headers.update(headers)
+
+        while True:
+            conn = self._get_connection(parsed)
+            try:
+                conn.request("GET", path, headers=req_headers)
+                resp = conn.getresponse()
+
+                if resp.status == 503 and retry_count > 0:
+                    resp.read()  # レスポンスボディを消費して接続を再利用可能にする
+                    retry_count -= 1
+                    time.sleep(WAITING_TIME_FOR_503)
+                    continue
+
+                if resp.status >= 400:
+                    resp.read()
+                    raise requests.exceptions.HTTPError(
+                        f"{resp.status} {resp.reason}: {url}", response=None
+                    )
+
+                raw_data = resp.read()
+
+                # gzip展開
+                encoding = resp.getheader("Content-Encoding", "")
+                if "gzip" in encoding:
+                    raw_data = gzip.decompress(raw_data)
+
+                charset = resp.headers.get_content_charset() or "utf-8"
+                body = raw_data.decode(charset)
+                return pretreatment_source(body)
+
+            except (http.client.RemoteDisconnected, ConnectionResetError, OSError):
+                # 接続が切れた場合はキャッシュを破棄してリトライ
+                key = f"{parsed.scheme}://{parsed.hostname}:{parsed.port or ''}"
+                self._connections.pop(key, None)
+                if retry_count > 0:
+                    retry_count -= 1
+                    continue
+                raise requests.exceptions.ConnectionError(
+                    f"接続エラー: {url}"
+                )
+
+    def _sleep_for_download(self, download_wait_steps: int) -> None:
+        """narou_rb準拠のダウンロードウェイト
+
+        - 前回DLから max_steps_wait_time 以上経過していればカウンタリセット
+        - N話ごとに長めのウェイト（max_steps_wait_time）
+        - それ以外は interval_sleep_time（デフォルト0=ウェイトなし）
+        """
+        if time.time() - self._last_download_time > self._max_steps_wait_time:
+            self._wait_counter = 0
+
+        if (download_wait_steps > 0
+                and self._wait_counter % download_wait_steps == 0
+                and self._wait_counter >= download_wait_steps):
+            time.sleep(self._max_steps_wait_time)
+        elif self._wait_counter > 0 and self._interval_sleep_time > 0:
+            time.sleep(self._interval_sleep_time)
+
+        self._wait_counter += 1
+        self._last_download_time = time.time()
 
     # ========== ファイルI/O ==========
 
@@ -549,13 +616,13 @@ class NovelDownloader:
         path = section_dir / f"{index} {file_subtitle}.yaml"
         self._validate_path(path, section_dir)
         with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(info, f, allow_unicode=True, default_flow_style=False)
+            yaml.dump(info, f, allow_unicode=True, default_flow_style=False, Dumper=_yaml_dumper)
 
     def _save_toc(self, archive_path: Path, toc: dict) -> None:
         """目次データを保存"""
         path = archive_path / TOC_FILE_NAME
         with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(toc, f, allow_unicode=True, default_flow_style=False)
+            yaml.dump(toc, f, allow_unicode=True, default_flow_style=False, Dumper=_yaml_dumper)
 
     def _load_toc(self, archive_path: Path) -> dict | None:
         """保存済み目次データを読み込む"""

@@ -1,6 +1,7 @@
 """メインウィンドウ。"""
 
 import os
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -236,9 +237,19 @@ class MainWindow(QMainWindow):
             self._on_selection_changed
         )
 
-    def _log(self, message: str):
-        """ログ表示欄にメッセージを追記する。"""
-        self._log_view.appendPlainText(message)
+    def _log(self, message: str, highlight: bool = False):
+        """ログ表示欄にメッセージを追記する。
+
+        highlight=True の場合、プロセス完了行として色を変えて表示する。
+        """
+        if highlight:
+            # narou.rb WebUI風: 完了行はライムグリーンで表示
+            escaped = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            self._log_view.appendHtml(
+                f'<span style="color: #7fff00;">{escaped}</span>'
+            )
+        else:
+            self._log_view.appendPlainText(message)
         self._log_view.verticalScrollBar().setValue(
             self._log_view.verticalScrollBar().maximum()
         )
@@ -303,7 +314,7 @@ class MainWindow(QMainWindow):
 
     def _on_add_finished(self, success: bool, message: str):
         self._add_btn.setEnabled(True)
-        self._log(message)
+        self._log(message, highlight=True)
         if self._add_worker is not None:
             self._add_worker.deleteLater()
             self._add_worker = None
@@ -384,7 +395,7 @@ class MainWindow(QMainWindow):
         msg = f"完了: {success}件成功"
         if errors:
             msg += f"、{errors}件エラー"
-        self._log(msg)
+        self._log(msg, highlight=True)
         self._reload_novels()
 
     def _on_delete(self):
@@ -415,9 +426,14 @@ class MainWindow(QMainWindow):
             return
 
         for novel in novels:
+            # ダウンロード済みデータを削除
+            if novel.archive_path:
+                archive = Path(novel.archive_path)
+                if archive.is_dir():
+                    shutil.rmtree(archive, ignore_errors=True)
             self._db.delete_novel(novel.id)
         self._reload_novels()
-        self._log(f"{len(novels)}件を削除しました")
+        self._log(f"{len(novels)}件を削除しました（データ含む）", highlight=True)
 
     def closeEvent(self, event):
         self._db.close()
