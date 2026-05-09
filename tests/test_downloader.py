@@ -149,3 +149,35 @@ def test_ruby_regex_conversion():
     # 先読み/後読みは変換されないこと
     assert _ruby_regex_to_python("(?<=foo)") == "(?<=foo)"
     assert _ruby_regex_to_python("(?<!bar)") == "(?<!bar)"
+
+
+def test_fetch_novel_metadata_returns_none_for_unknown_url():
+    """対応していないURLでは fetch_novel_metadata() が None を返すこと"""
+    db = Database(Path(tempfile.mkdtemp()) / "test.db")
+    dl = NovelDownloader(db, Path(__file__).parent.parent)
+    result = dl.fetch_novel_metadata("https://example.invalid/foo/")
+    assert result is None
+    dl.close()
+    db.close()
+
+
+def test_close_releases_connections():
+    """close() で持続接続キャッシュが解放されること"""
+    db = Database(Path(tempfile.mkdtemp()) / "test.db")
+    dl = NovelDownloader(db, Path(__file__).parent.parent)
+
+    # 接続キャッシュにダミーを直接登録（実HTTP呼び出しを避けるため）
+    class _DummyConn:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    dummy = _DummyConn()
+    dl._connections["https://example.test:443"] = dummy
+
+    dl.close()
+    assert dummy.closed
+    assert dl._connections == {}
+    db.close()

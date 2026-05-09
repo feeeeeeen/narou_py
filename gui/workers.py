@@ -53,51 +53,60 @@ class DownloadWorker(QThread):
         errors = 0
         # ワーカースレッド内で新しいDB接続を作成（SQLiteスレッド安全性）
         db = Database(self.db_path)
-        downloader = NovelDownloader(db, Path(self.output_dir))
+        downloader: NovelDownloader | None = None
+        try:
+            # NovelDownloader.__init__() は webnovel/ が無いと FileNotFoundError を投げる。
+            # その場合でも下の finally で必ず db.close() できるよう、構築は try 内で行う。
+            downloader = NovelDownloader(db, Path(self.output_dir))
 
-        for i, novel in enumerate(self.novels):
-            if self._cancel_event.is_set():
-                break
+            for i, novel in enumerate(self.novels):
+                if self._cancel_event.is_set():
+                    break
 
-            pct = int((i / total) * 100)
-            self.progress.emit(pct, f"ダウンロード中: {novel.title}")
+                pct = int((i / total) * 100)
+                self.progress.emit(pct, f"ダウンロード中: {novel.title}")
 
-            try:
-                # ダウンロード
-                def _progress_cb(current: int, total_sections: int, msg: str):
-                    self.progress.emit(pct, f"[{current}/{total_sections}] {msg}")
+                try:
+                    # ダウンロード
+                    def _progress_cb(current: int, total_sections: int, msg: str):
+                        self.progress.emit(pct, f"[{current}/{total_sections}] {msg}")
 
-                result = downloader.download(
-                    novel.toc_url,
-                    force=self.force,
-                    progress_callback=_progress_cb,
-                )
+                    result = downloader.download(
+                        novel.toc_url,
+                        force=self.force,
+                        progress_callback=_progress_cb,
+                    )
 
-                if result.status == "failed":
+                    if result.status == "failed":
+                        errors += 1
+                        self.finished_one.emit(novel.id, False, "ダウンロード失敗")
+                        continue
+
+                    # EPUB変換（更新なしの場合も設定変更に対応するため常に実行）
+                    self.progress.emit(pct, f"変換中: {novel.title}")
+                    # DB再取得（ダウンロードでarchive_pathが更新されている場合がある）
+                    updated_novel = db.get_novel(novel.id) or novel
+                    archive_path = Path(updated_novel.archive_path) if updated_novel.archive_path else None
+
+                    if archive_path and (archive_path / SECTION_SAVE_DIR).exists():
+                        epub_path = self._convert_to_epub(updated_novel, archive_path)
+                        status_msg = "完了" if result.status == "ok" else "変換完了（更新なし）"
+                        self.finished_one.emit(novel.id, True, f"{status_msg}: {epub_path.name}")
+                    else:
+                        self.finished_one.emit(novel.id, True, f"更新なし: {novel.title}")
+
+                    success += 1
+
+                except Exception as e:
                     errors += 1
-                    self.finished_one.emit(novel.id, False, "ダウンロード失敗")
-                    continue
-
-                # EPUB変換（更新なしの場合も設定変更に対応するため常に実行）
-                self.progress.emit(pct, f"変換中: {novel.title}")
-                # DB再取得（ダウンロードでarchive_pathが更新されている場合がある）
-                updated_novel = db.get_novel(novel.id) or novel
-                archive_path = Path(updated_novel.archive_path) if updated_novel.archive_path else None
-
-                if archive_path and (archive_path / SECTION_SAVE_DIR).exists():
-                    epub_path = self._convert_to_epub(updated_novel, archive_path)
-                    status_msg = "完了" if result.status == "ok" else "変換完了（更新なし）"
-                    self.finished_one.emit(novel.id, True, f"{status_msg}: {epub_path.name}")
-                else:
-                    self.finished_one.emit(novel.id, True, f"更新なし: {novel.title}")
-
-                success += 1
-
-            except Exception as e:
-                errors += 1
-                self.finished_one.emit(novel.id, False, str(e))
-
-        db.close()
+                    logger.exception("ダウンロード処理で予期せぬ例外: %s", novel.title)
+                    self.finished_one.emit(novel.id, False, str(e))
+        finally:
+            try:
+                if downloader is not None:
+                    downloader.close()
+            finally:
+                db.close()
         self.progress.emit(100, "完了")
         self.finished_all.emit(success, errors)
 
@@ -181,38 +190,39 @@ class AddNovelWorker(QThread):
     def run(self):
         # ワーカースレッド内で新しいDB接続を作成（SQLiteスレッド安全性）
         db = Database(self.db_path)
+        downloader: NovelDownloader | None = None
         try:
+            # NovelDownloader.__init__() は webnovel/ が無いと FileNotFoundError を投げる。
+            # その場合でも下の finally で必ず db.close() できるよう、構築は try 内で行う。
             downloader = NovelDownloader(db, Path(".narou"))
-            setting = downloader._resolve_target(self.url)
-            if setting is None:
-                self.finished.emit(False, "対応していないURLです")
+            metadata = downloader.fetch_novel_metadata(self.url)
+            if metadata is None:
+                self.finished.emit(False, "対応していないURLか、小説情報の取得に失敗しました")
                 return
 
             # 既存チェック
-            toc_url = setting["toc_url"]
-            existing = db.get_novel_by_url(toc_url)
+            existing = db.get_novel_by_url(metadata["toc_url"])
             if existing:
                 self.finished.emit(False, f"既に登録済みです: {existing.title}")
                 return
 
-            # 目次取得で小説情報をまとめて取得
-            toc = downloader._get_table_of_contents(setting)
-            if toc is None:
-                self.finished.emit(False, "小説情報の取得に失敗しました")
-                return
-
             novel = Novel(
-                title=toc.get("title", "不明"),
-                author=toc.get("author", "不明"),
-                toc_url=toc_url,
-                sitename=setting.get_raw("name") or "",
-                novel_type=toc.get("novel_type", 0),
-                general_all_no=len(toc.get("subtitles", [])),
+                title=metadata["title"],
+                author=metadata["author"],
+                toc_url=metadata["toc_url"],
+                sitename=metadata["sitename"],
+                novel_type=metadata["novel_type"],
+                general_all_no=metadata["general_all_no"],
             )
             novel_id = db.add_novel(novel)
             self.finished.emit(True, f"追加しました: {novel.title} (ID: {novel_id})")
 
         except Exception as e:
+            logger.exception("小説追加処理で予期せぬ例外: %s", self.url)
             self.finished.emit(False, f"エラー: {e}")
         finally:
-            db.close()
+            try:
+                if downloader is not None:
+                    downloader.close()
+            finally:
+                db.close()

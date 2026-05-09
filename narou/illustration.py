@@ -6,8 +6,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-from narou.http_utils import fetch_with_retry
-from narou.narou_api import USER_AGENT
+from narou.http_utils import USER_AGENT, fetch_with_retry
 
 ILLUST_DIR = "挿絵"
 NAROU_ILLUST_URL = "http://{}.mitemin.net/userpageimage/viewimage/icode/{}/"

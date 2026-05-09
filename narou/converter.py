@@ -271,13 +271,17 @@ class TextConverter:
         def _stash(m: re.Match) -> str:
             self._illust_list.append(m.group(0))
             idx = len(self._illust_list) - 1
-            return f"［＃挿絵＝{idx}］"
+            return f"［＃挿絵＝{_encode_stash_key(idx)}］"
 
         return re.sub(r"［＃挿絵（.+?）入る］", _stash, data)
 
     def _rebuild_illust(self, data: str) -> str:
-        for i, illust in enumerate(self._illust_list):
-            data = data.replace(f"［＃挿絵＝{i}］", illust)
+        def _rebuild(m: re.Match) -> str:
+            key = _decode_stash_key(m.group(1))
+            if 0 <= key < len(self._illust_list):
+                return self._illust_list[key]
+            return m.group(0)
+        data = re.sub(rf"［＃挿絵＝({_PUA_STASH_RE})］", _rebuild, data)
         self._illust_list.clear()
         return data
 
@@ -288,13 +292,17 @@ class TextConverter:
         def _stash(m: re.Match) -> str:
             self._url_list.append(m.group(0))
             idx = len(self._url_list) - 1
-            return f"［＃ＵＲＬ＝{idx}］"
+            return f"［＃ＵＲＬ＝{_encode_stash_key(idx)}］"
 
         return re.sub(r"https?://[\w/:%#$&?()~.=+\-]+", _stash, data)
 
     def _rebuild_url(self, data: str) -> str:
-        for i, url in enumerate(self._url_list):
-            data = data.replace(f"［＃ＵＲＬ＝{i}］", url)
+        def _rebuild(m: re.Match) -> str:
+            key = _decode_stash_key(m.group(1))
+            if 0 <= key < len(self._url_list):
+                return self._url_list[key]
+            return m.group(0)
+        data = re.sub(rf"［＃ＵＲＬ＝({_PUA_STASH_RE})］", _rebuild, data)
         self._url_list.clear()
         return data
 
@@ -329,7 +337,7 @@ class TextConverter:
                 if " " in text or (len(text) >= ENGLISH_MIN_LEN and any(c.islower() for c in text)):
                     self._english_sentences.append(text)
                     idx = len(self._english_sentences) - 1
-                    return f"［＃英文＝{idx}］"
+                    return f"［＃英文＝{_encode_stash_key(idx)}］"
                 return text
 
             data = re.sub(r"[\w.,!?'\" &:;_-]+", _stash_english, data)
@@ -348,8 +356,12 @@ class TextConverter:
         return data
 
     def _rebuild_english_sentences(self, data: str) -> str:
-        for i, sentence in enumerate(self._english_sentences):
-            data = data.replace(f"［＃英文＝{i}］", sentence)
+        def _rebuild(m: re.Match) -> str:
+            key = _decode_stash_key(m.group(1))
+            if 0 <= key < len(self._english_sentences):
+                return self._english_sentences[key]
+            return m.group(0)
+        data = re.sub(rf"［＃英文＝({_PUA_STASH_RE})］", _rebuild, data)
         self._english_sentences.clear()
         return data
 
@@ -383,13 +395,17 @@ class TextConverter:
             text = f"　　　［＃ゴシック体］{top}{num}{bottom}［＃ゴシック体終わり］"
             self._force_indent_list.append(text)
             idx = len(self._force_indent_list) - 1
-            return f"［＃章見出し＝{idx}］"
+            return f"［＃章見出し＝{_encode_stash_key(idx)}］"
 
         return pattern.sub(_replace, data)
 
     def _rebuild_force_indent(self, data: str) -> str:
-        for i, text in enumerate(self._force_indent_list):
-            data = data.replace(f"［＃章見出し＝{i}］", text)
+        def _rebuild(m: re.Match) -> str:
+            key = _decode_stash_key(m.group(1))
+            if 0 <= key < len(self._force_indent_list):
+                return self._force_indent_list[key]
+            return m.group(0)
+        data = re.sub(rf"［＃章見出し＝({_PUA_STASH_RE})］", _rebuild, data)
         self._force_indent_list.clear()
         return data
 

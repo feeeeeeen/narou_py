@@ -418,7 +418,11 @@ def _build_section_xhtml(sec: EpubSection) -> str:
 
 
 def _xml_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&apos;"))
 
 
 def _wrap_text(text: str, max_chars: int) -> list[str]:

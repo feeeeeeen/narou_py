@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 from narou.database import Database
 from narou.helpers import pretreatment_source, safe_filename
 from narou.html_to_aozora import html_to_aozora
+from narou.http_utils import USER_AGENT
 from narou.models import Chapter, Novel, Section
 from narou.novel_info import NovelInfo
 from narou.site_setting import SiteSetting, _ruby_regex_to_python
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 SECTION_SAVE_DIR = "本文"
 RAW_DATA_DIR = "raw"
 TOC_FILE_NAME = "toc.yaml"
@@ -110,8 +110,54 @@ class NovelDownloader:
 
         return self._run_download(setting, force, progress_callback)
 
+    def fetch_novel_metadata(self, url: str) -> dict | None:
+        """URL からサイト判定・目次取得を行いメタデータ辞書を返す（GUI 追加用）。
+
+        Returns:
+            {"toc_url", "title", "author", "sitename", "novel_type", "general_all_no"}
+            の辞書。サイト未対応または取得失敗時は None。
+        """
+        setting = self._resolve_target(url)
+        if setting is None:
+            return None
+
+        toc = self._get_table_of_contents(setting)
+        if toc is None:
+            return None
+
+        return {
+            "toc_url": setting["toc_url"],
+            "title": toc.get("title", "不明"),
+            "author": toc.get("author", "不明"),
+            "sitename": setting.get_raw("name") or "",
+            "novel_type": toc.get("novel_type", 0),
+            "general_all_no": len(toc.get("subtitles", [])),
+        }
+
+    def close(self) -> None:
+        """持続接続キャッシュを閉じる。
+
+        DownloadWorker などの呼び出し元は処理終了後にこのメソッドを呼ぶことで、
+        TIME_WAIT に残る HTTP/HTTPS 接続を明示的に解放できる。
+        """
+        for conn in self._connections.values():
+            try:
+                conn.close()
+            except OSError:
+                pass
+        self._connections.clear()
+
     def _resolve_target(self, target: str) -> SiteSetting | None:
-        """入力をサイト設定に解決する"""
+        """入力をサイト設定に解決する。
+
+        SiteSetting は self.site_settings として共有されるため、複数回 resolve すると
+        前回の `_match_values` が残留して別小説の値を引き継ぐ恐れがある。冒頭で全設定の
+        `clear()` を呼び、毎回まっさらな状態から照合する。
+        """
+        # 残留マッチ値のクリア（複数 URL を順次解決する場合の値混入防止）
+        for setting in self.site_settings:
+            setting.clear()
+
         target_lower = target.strip().lower()
 
         # URL の場合

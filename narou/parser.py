@@ -30,6 +30,19 @@ class ParsedSection:
 # 漢字判定用パターン（仝々〆〇ヶ含む）
 _KANJI_CHARS = r"\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF\u4EDD\u3005\u3006\u3007\u30F6"
 
+# インライン注記用プレースホルダ（Unicode 私用領域 U+E020〜 を使用）。
+# converter.py の stash が U+E010〜U+E01F を使うため、衝突回避のため別レンジを割り当てる。
+# HTML エスケープ対象外の文字なので、escape() を通しても変化しない。
+_PH_B_START = "\uE020"
+_PH_B_END = "\uE021"
+_PH_TCY_START = "\uE022"
+_PH_TCY_END = "\uE023"
+_PH_DAK_START = "\uE024"
+_PH_DAK_END = "\uE025"
+_PH_SES_START = "\uE026"
+_PH_SES_END = "\uE027"
+_PH_TATESEN = "\uE028"
+
 
 def parse_text(text: str, section_id: str = "s1") -> ParsedSection:
     """converter.pyの出力テキストを解析してParsedSectionを返す。
@@ -130,52 +143,52 @@ def _convert_inline(text: str) -> str:
     # ゴシック体: ［＃ゴシック体］...［＃ゴシック体終わり］
     text = re.sub(
         r"［＃ゴシック体］(.+?)［＃ゴシック体終わり］",
-        lambda m: f'\x00B_START\x00{m.group(1)}\x00B_END\x00',
+        lambda m: f"{_PH_B_START}{m.group(1)}{_PH_B_END}",
         text,
     )
 
     # 縦中横: ［＃縦中横］...［＃縦中横終わり］
     text = re.sub(
         r"［＃縦中横］(.+?)［＃縦中横終わり］",
-        lambda m: f'\x00TCY_START\x00{m.group(1)}\x00TCY_END\x00',
+        lambda m: f"{_PH_TCY_START}{m.group(1)}{_PH_TCY_END}",
         text,
     )
 
     # 濁点: ［＃濁点］...［＃濁点終わり］
     text = re.sub(
         r"［＃濁点］(.+?)［＃濁点終わり］",
-        lambda m: f'\x00DAKUTEN_START\x00{m.group(1)}\x00DAKUTEN_END\x00',
+        lambda m: f"{_PH_DAK_START}{m.group(1)}{_PH_DAK_END}",
         text,
     )
 
     # 傍点: ［＃傍点］...（単独行でない場合のインライン版）
     text = re.sub(
         r"(.+?)［＃「\1」に傍点］",
-        lambda m: f'\x00SESAME_START\x00{m.group(1)}\x00SESAME_END\x00',
+        lambda m: f"{_PH_SES_START}{m.group(1)}{_PH_SES_END}",
         text,
     )
     text = re.sub(
         r"［＃「(.+?)」に傍点］",
-        lambda m: f'\x00SESAME_START\x00{m.group(1)}\x00SESAME_END\x00',
+        lambda m: f"{_PH_SES_START}{m.group(1)}{_PH_SES_END}",
         text,
     )
 
     # 縦線の復元: ※［＃縦線］ → ｜
-    text = text.replace("※［＃縦線］", "\x00TATESEN\x00")
+    text = text.replace("※［＃縦線］", _PH_TATESEN)
 
     # --- HTMLエスケープ ---
     text = escape(text)
 
     # --- プレースホルダをHTMLタグに復元 ---
-    text = text.replace("\x00B_START\x00", '<b>')
-    text = text.replace("\x00B_END\x00", "</b>")
-    text = text.replace("\x00TCY_START\x00", '<span class="tcy">')
-    text = text.replace("\x00TCY_END\x00", "</span>")
-    text = text.replace("\x00DAKUTEN_START\x00", '<span class="dakuten">')
-    text = text.replace("\x00DAKUTEN_END\x00", "</span>")
-    text = text.replace("\x00SESAME_START\x00", '<em class="sesame">')
-    text = text.replace("\x00SESAME_END\x00", "</em>")
-    text = text.replace("\x00TATESEN\x00", "｜")
+    text = text.replace(_PH_B_START, "<b>")
+    text = text.replace(_PH_B_END, "</b>")
+    text = text.replace(_PH_TCY_START, '<span class="tcy">')
+    text = text.replace(_PH_TCY_END, "</span>")
+    text = text.replace(_PH_DAK_START, '<span class="dakuten">')
+    text = text.replace(_PH_DAK_END, "</span>")
+    text = text.replace(_PH_SES_START, '<em class="sesame">')
+    text = text.replace(_PH_SES_END, "</em>")
+    text = text.replace(_PH_TATESEN, "｜")
 
     # ルビ: ｜base《ruby》
     text = re.sub(

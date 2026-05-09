@@ -6,6 +6,14 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# プロジェクト全体で共有する User-Agent。
+# narou.rb 同様に Chrome 系 UA を装う必要があり、syosetu.com は UA 無しでは 403 を返す。
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
 
 def fetch_with_retry(
     session: requests.Session,
@@ -29,7 +37,6 @@ def fetch_with_retry(
     Raises:
         requests.RequestException: リトライ上限超過時
     """
-    last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             resp = session.get(url, headers=headers or {}, timeout=timeout)
@@ -41,11 +48,11 @@ def fetch_with_retry(
             resp.raise_for_status()
             return resp
         except requests.RequestException as e:
-            last_exc = e
-            if attempt < max_retries:
-                wait = 2 ** attempt
-                logger.warning("リクエスト失敗、%d秒後にリトライ (%d/%d): %s - %s", wait, attempt + 1, max_retries, url, e)
-                time.sleep(wait)
-            else:
+            if attempt >= max_retries:
                 raise
-    raise last_exc  # ここには到達しないはずだが念のため
+            wait = 2 ** attempt
+            logger.warning("リクエスト失敗、%d秒後にリトライ (%d/%d): %s - %s", wait, attempt + 1, max_retries, url, e)
+            time.sleep(wait)
+    # 到達不能: 最終 attempt では status==503 でも raise_for_status() が HTTPError を投げ
+    # except 節で再 raise されるため。型チェッカ向けに RuntimeError を保険として置く。
+    raise RuntimeError(f"fetch_with_retry: unreachable ({url})")  # pragma: no cover

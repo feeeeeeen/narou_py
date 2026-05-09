@@ -436,5 +436,14 @@ class MainWindow(QMainWindow):
         self._log(f"{len(novels)}件を削除しました（データ含む）", highlight=True)
 
     def closeEvent(self, event):
+        # 実行中ワーカーを安全に停止する。QThread が動作中のままウィジェットを
+        # 破棄すると "QThread: Destroyed while thread is still running" 警告や
+        # 最悪クラッシュを招くため、キャンセル + 5 秒の wait() を入れる。
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(5000)
+        if self._add_worker is not None and self._add_worker.isRunning():
+            # AddNovelWorker は単発処理でキャンセル機構を持たないため、待機のみ
+            self._add_worker.wait(5000)
         self._db.close()
         super().closeEvent(event)

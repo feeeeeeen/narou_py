@@ -3,11 +3,10 @@ import logging
 import requests
 import yaml
 
+from narou.http_utils import USER_AGENT
 from narou.site_setting import SiteSetting
 
 logger = logging.getLogger(__name__)
-
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 
 class NarouAPI:
@@ -43,7 +42,16 @@ class NarouAPI:
             logger.error("なろうAPIレスポンスのパースエラー: %s", e)
             return None
 
-        if not result or result[0].get("allcount") != 1:
+        # 防御的型ガード: HTML エラーページなど予期せぬレスポンスで result が
+        # list でなかったり要素数不足のケースに備える
+        if (not isinstance(result, list)
+                or len(result) < 2
+                or not isinstance(result[0], dict)
+                or not isinstance(result[1], dict)):
+            logger.warning("なろうAPIレスポンスが想定形式と異なります: %s", url)
+            return None
+
+        if result[0].get("allcount") != 1:
             return None
 
         data = result[1]

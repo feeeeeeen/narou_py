@@ -77,7 +77,7 @@ narou_py/
 │   └── workers.py       #   QThreadバックグラウンドワーカー
 ├── webnovel/            # サイト定義YAML（*.yaml）
 ├── preset/              # 小説個別プリセット
-└── tests/               # テストスイート（113テスト）
+└── tests/               # テストスイート（127テスト）
 ```
 
 ## アーキテクチャ
@@ -194,16 +194,16 @@ py -3.14 -m pytest tests/ -v
 py -3.14 -m pytest tests/test_converter.py -v
 ```
 
-テスト構成（121テスト）:
+テスト構成（127テスト）:
 
 | テストファイル | テスト数 | 対象 |
 |-------------|---------|------|
-| test_converter.py | 31 | テキスト変換パイプライン |
+| test_converter.py | 37 | テキスト変換パイプライン |
 | test_parser.py | 17 | 青空文庫注記→XHTMLパーサ |
 | test_epub_writer.py | 11 | EPUB生成 |
 | test_html_to_aozora.py | 11 | HTML→青空文庫変換 |
 | test_helpers.py | 10 | ユーティリティ関数 |
-| test_downloader.py | 9 | ダウンロードエンジン |
+| test_downloader.py | 10 | ダウンロードエンジン |
 | test_site_setting.py | 8 | サイト定義YAML |
 | test_security.py | 8 | セキュリティ回帰テスト |
 | test_database.py | 7 | データベース操作 |
@@ -251,6 +251,13 @@ download_time: "2024-01-01T00:00:00"
 - **API変更対応**: txtdownload API廃止に伴い、HTML本文ページからの直接パースに変更
 
 ## 修正履歴
+
+### 2026-05-09
+
+- **本文欠落バグ修正**: 章内に英文・URL・挿絵注記・章見出し風文字列が複数登場すると、該当部分が `［＃英文＝〇］` のような残骸（漢数字部分は出現順に〇、一、二…と増加）に化けて元のテキストが欠落していた問題を修正
+  - 原因: 該当4種のstashプレースホルダ内idxが半角数字だったため、後続の数字変換パイプライン（`_num_to_kanji`）で半角→全角→漢数字変換され、復元時にキー不一致で `replace` がマッチしなくなっていた
+  - 対応: 既に数字変換の干渉対策が入っていた `_kanji_num_list` / `_num_comma_list` と同様に、4箇所すべてのstashキーをPUA私用領域文字列（`_encode_stash_key`）方式に統一
+  - `convert()` を経由する統合回帰テストを4件追加し、同種のリグレッションを検出可能に
 
 ### 2026-03-15
 

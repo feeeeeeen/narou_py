@@ -239,7 +239,87 @@ def test_convert_postscript_erased():
     assert result == ""
 
 
+# ========== stash退避キーが数字変換で破壊されない回帰テスト ==========
+# 以前は ［＃英文＝0］ のidxが半角数字だったため、後段の漢数字変換で
+# 〇/一/二… に化けて復元できず、本文の英文部分が欠落していた。
+
+def test_convert_body_preserves_multiple_english_sentences():
+    """複数の英文を含む本文がパイプライン全体で復元できる"""
+    c = _make_converter()
+    text = (
+        "彼は Hello World と挨拶した。\n"
+        "次に Good morning everyone と言った。\n"
+        "最後は This is a pen であった。\n"
+    )
+    result = c.convert(text, "body")
+    assert "Hello World" in result
+    assert "Good morning everyone" in result
+    assert "This is a pen" in result
+    # 復元失敗時の残骸が出ていないこと
+    assert "英文＝" not in result
+
+
+def test_convert_body_preserves_url_and_english():
+    """URLと英文が同一本文中に複数あっても復元できる"""
+    c = _make_converter()
+    text = (
+        "詳細は https://example.com/a を参照。\n"
+        "続きは https://example.com/b にあります。\n"
+        "Hello World everyone.\n"
+    )
+    result = c.convert(text, "body")
+    assert "https://example.com/a" in result
+    assert "https://example.com/b" in result
+    assert "Hello World" in result
+    assert "ＵＲＬ＝" not in result
+    assert "英文＝" not in result
+
+
+def test_convert_body_preserves_multiple_illusts():
+    """挿絵注記が複数あっても復元できる"""
+    c = _make_converter(enable_illust=True)
+    text = (
+        "［＃挿絵（a.png）入る］\n"
+        "間の文章。\n"
+        "［＃挿絵（b.png）入る］\n"
+        "［＃挿絵（c.png）入る］\n"
+    )
+    result = c.convert(text, "body")
+    assert "［＃挿絵（a.png）入る］" in result
+    assert "［＃挿絵（b.png）入る］" in result
+    assert "［＃挿絵（c.png）入る］" in result
+
+
+def test_convert_body_preserves_multiple_chapter_headings():
+    """章見出し風の行が複数あっても復元できる"""
+    c = _make_converter()
+    text = "-1-\n本文1\n-2-\n本文2\n-3-\n本文3\n"
+    result = c.convert(text, "body")
+    # 章見出しのstash残骸が残らない
+    assert "章見出し＝" not in result
+
+
 def test_convert_subtitle():
     c = _make_converter()
     result = c.convert("第1話 ﾃｽﾄ", "subtitle")
     assert "テスト" in result
+
+
+# ========== 漢数字stash回帰テスト ==========
+
+def test_existing_kanji_num_preserved():
+    """既存の漢数字が数字変換パイプラインで消えないこと"""
+    c = _make_converter(enable_convert_num_to_kanji=True)
+    text = "　三千世界の鴉を殺し"
+    result = c.convert(text, "body")
+    assert "三千世界" in result
+
+
+def test_kanji_num_with_digits():
+    """漢数字と半角数字が混在するテキストで両方正しく変換されること"""
+    c = _make_converter(enable_convert_num_to_kanji=True)
+    text = "　百人中5人が合格した"
+    result = c.convert(text, "body")
+    assert "百人" in result
+    # 5は漢数字に変換される
+    assert "5" not in result
